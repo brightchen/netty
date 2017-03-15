@@ -28,7 +28,11 @@
   <packaging>jar</packaging>
 
   <name>Netty/Example</name>
-
+  
+  <properties>
+    <os.detected.classifier>osx-x86_64</os.detected.classifier>
+  </properties>
+  
   <dependencies>
     <dependency>
       <groupId>${project.groupId}</groupId>

@@ -33,6 +33,7 @@
     <skipTests>true</skipTests>
     <epoll.arch>x86_64</epoll.arch>
     <jmh.version>1.17.4</jmh.version>
+    <os.detected.classifier>osx-x86_64</os.detected.classifier>
   </properties>
 
   <profiles>

@@ -28,6 +28,10 @@
 
   <name>Netty/Testsuite</name>
 
+  <properties>
+    <os.detected.classifier>osx-x86_64</os.detected.classifier>
+  </properties>
+  
   <dependencies>
     <dependency>
       <groupId>${project.groupId}</groupId>
