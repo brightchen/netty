@@ -13,13 +13,16 @@ import org.junit.Assert;
 import org.junit.Test;
 
 import io.netty.bootstrap.Bootstrap;
+import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.DefaultChannelPromise;
 import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
 import io.netty.channel.socket.nio.NioSocketChannel;
+import io.netty.example.echo.EchoServerHandler;
 import io.netty.example.telnet.TelnetClientHandler;
 import io.netty.handler.codec.string.StringDecoder;
+import io.netty.handler.codec.string.StringEncoder;
 
 /**
  * Test how Netty can handle socket which created outside
@@ -72,6 +75,17 @@ public class InteractTest
     handleWorkSocket(nettyChannel);
   }
   
+  
+  private static class MyEchoHandler extends EchoServerHandler
+  {
+    @Override
+    public void channelRead(ChannelHandlerContext ctx, Object msg) {
+      System.err.println(msg);
+      ctx.write(msg);
+    }
+
+  }
+  
   public void handleWorkSocket(final NioSocketChannel ch) throws InterruptedException
   {
     EventLoopGroup group = new NioEventLoopGroup();
@@ -79,7 +93,7 @@ public class InteractTest
       Bootstrap b = new Bootstrap();
       b.group(group);
       
-      ch.pipeline().addFirst(new TelnetClientHandler()).addFirst(new StringDecoder());
+      ch.pipeline().addFirst(new MyEchoHandler()).addFirst(new StringDecoder()).addFirst(new StringEncoder());
       EventLoop eventLoop = group.next();
       ch.unsafe().register(eventLoop, new DefaultChannelPromise(ch, eventLoop));
 
