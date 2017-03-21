@@ -6,11 +6,19 @@ import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.ServerSocketChannel;
+import java.nio.channels.SocketChannel;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.Assert;
 import org.junit.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.google.common.collect.Sets;
 
@@ -188,4 +196,151 @@ public class InteractTest
     }
   }
 
+
+  /**
+   * This test mimic the pub-sub and sub messages will be switch to netty
+   * - java server socket waiting for connection
+   * - clients(pub and sub) connected and java work sockets created
+   * - sub send message to identify it's the sub. The handler switch to netty.
+   * - the java work channel handles the message from pub and netty handle message from sub
+   * 
+   */
+  @Test
+  public void testMimicPubSub() throws IOException, InterruptedException
+  {
+    ServerSocketChannel server = ServerSocketChannel.open();
+    server.socket().bind(new InetSocketAddress(PORT_NUMBER));
+    server.socket().setReuseAddress(true);
+    server.configureBlocking(false);
+
+    final Selector selector = Selector.open();
+    server.register(selector, SelectionKey.OP_ACCEPT);
+    
+    System.out.println("Listen on port: " + PORT_NUMBER);
+    
+    
+    ExecutorService executor = Executors.newSingleThreadExecutor();
+    executor.execute(new Task1(server, selector, this));
+   
+    //wait until subscriber connected and identified
+    suscriberCountDown.await();
+    logger.info("creating netty...");
+    
+    NioSocketChannel nettyChannel = new NioSocketChannel(javaSuscriberChannel);
+    handleWorkSocket(nettyChannel);
+  }
+  
+  private java.nio.channels.SocketChannel javaSuscriberChannel = null;
+  private CountDownLatch suscriberCountDown = new CountDownLatch(1);
+  
+  /**
+   * handle server socket and client socket for publisher
+   *
+   */
+  private static class Task1 implements Runnable
+  {
+    InteractTest owner;
+    ServerSocketChannel server;
+    final Selector selector;
+    java.nio.channels.SocketChannel javaWorkChannel;
+    AtomicBoolean closing = new AtomicBoolean(false);
+    public Task1(ServerSocketChannel server, Selector selector, InteractTest owner)
+    {
+      this.server = server;
+      this.selector = selector;
+      this.owner = owner;
+    }
+
+    @Override
+    public void run()
+    {
+      while (!closing.get()) {
+        try {
+          int channelCount = selector.select();
+          if (channelCount > 0) {
+            Set<SelectionKey> keys = selector.selectedKeys();
+            Iterator<SelectionKey> iterator = keys.iterator();
+            while (iterator.hasNext()) {
+              SelectionKey key = iterator.next();
+
+              if (key.isAcceptable()) {
+                iterator.remove();
+                
+                javaWorkChannel = server.accept();
+                javaWorkChannel.configureBlocking(false);
+                MessageListener listener = new MessageListener(owner);
+                listener.register(javaWorkChannel.register(selector, SelectionKey.OP_READ, listener));
+              } else if (key.isReadable()) {
+                SocketChannel channel = (SocketChannel)key.channel();
+                if(channel != owner.javaSuscriberChannel) {
+                  logger.info("Non subscriber channel. handle it.");
+                  iterator.remove();
+                  ((MessageListener)key.attachment()).read();
+                } else {
+                  //NOTE: need remove it even netty handle it?
+                  iterator.remove();
+                  logger.info("subscriber channel. suppose netty handle it.");
+                }
+              }
+            }
+          }
+        } catch (Exception e) {
+          throw new RuntimeException(e);
+        }
+
+      }
+    }
+  }
+  
+  private static class MessageListener
+  {
+    private InteractTest owner;
+    private SelectionKey key;
+    private ByteBuffer buffer = ByteBuffer.allocate(2048);
+    
+    private static final byte[] subscriberIndicator = "subscriber".getBytes();
+    private static final byte[] publisherIndicator = "publisher".getBytes();
+    
+    public MessageListener(InteractTest owner)
+    {
+      this.owner = owner;
+    }
+    
+    public void register(SelectionKey key)
+    {
+      this.key = key;
+    }
+    public final void read() throws IOException
+    {
+      SocketChannel channel = (SocketChannel)key.channel();
+      int readLen;
+
+      if ((readLen = channel.read(buffer)) > 0) {
+        byte[] data = new byte[readLen];
+        System.arraycopy(buffer.array(), 0, data, 0, readLen);
+        //appended \r\n
+        if(readLen == subscriberIndicator.length + 2 
+            && Arrays.equals(Arrays.copyOf(data, subscriberIndicator.length), subscriberIndicator)) {
+          logger.info("subscriber identified.");
+          owner.javaSuscriberChannel = channel;
+          owner.suscriberCountDown.countDown();
+        } else {
+          logger.info("read bytes: {}", readLen);
+        }
+      }
+      else if (readLen == -1) {
+        try {
+          channel.close();
+        }
+        finally {
+          logger.warn("socket closed.");
+        }
+      }
+      else {
+        logger.warn("{} read 0 bytes", this);
+      }
+    }
+  }
+  
+  private static final Logger logger = LoggerFactory.getLogger(InteractTest.class);
 }
