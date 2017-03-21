@@ -203,6 +203,7 @@ public class InteractTest
    * - clients(pub and sub) connected and java work sockets created
    * - sub send message to identify it's the sub. The handler switch to netty.
    * - the java work channel handles the message from pub and netty handle message from sub
+   * - publisher client send a message, the application handle this message and redirect to subscriber client
    * 
    */
   @Test
@@ -231,6 +232,7 @@ public class InteractTest
   }
   
   private java.nio.channels.SocketChannel javaSuscriberChannel = null;
+  private java.nio.channels.SocketChannel javaPublisherChannel = null;
   private CountDownLatch suscriberCountDown = new CountDownLatch(1);
   
   /**
@@ -272,14 +274,18 @@ public class InteractTest
                 listener.register(javaWorkChannel.register(selector, SelectionKey.OP_READ, listener));
               } else if (key.isReadable()) {
                 SocketChannel channel = (SocketChannel)key.channel();
-                if(channel != owner.javaSuscriberChannel) {
-                  logger.info("Non subscriber channel. handle it.");
-                  iterator.remove();
-                  ((MessageListener)key.attachment()).read();
-                } else {
+                if(channel == owner.javaSuscriberChannel) {
                   //NOTE: need remove it even netty handle it?
                   iterator.remove();
-                  logger.info("subscriber channel. suppose netty handle it.");
+                  logger.warn("Subscriber channel. suppose netty handle it.");
+                } else if(channel == owner.javaPublisherChannel) {
+                  logger.info("Publisher channel. handle it.");
+                  iterator.remove();
+                  ((MessageListener)key.attachment()).handle();
+                } else {
+                  logger.info("register message. handle it");
+                  iterator.remove();
+                  ((MessageListener)key.attachment()).handle();
                 }
               }
             }
@@ -296,10 +302,9 @@ public class InteractTest
   {
     private InteractTest owner;
     private SelectionKey key;
-    private ByteBuffer buffer = ByteBuffer.allocate(2048);
     
-    private static final byte[] subscriberIndicator = "subscriber".getBytes();
-    private static final byte[] publisherIndicator = "publisher".getBytes();
+    private static final byte[] subscriberIndicator = "subscriber\r\n".getBytes();
+    private static final byte[] publisherIndicator = "publisher\r\n".getBytes();
     
     public MessageListener(InteractTest owner)
     {
@@ -310,35 +315,50 @@ public class InteractTest
     {
       this.key = key;
     }
-    public final void read() throws IOException
+    public final void handle() throws IOException
     {
       SocketChannel channel = (SocketChannel)key.channel();
       int readLen;
-
+      ByteBuffer buffer = ByteBuffer.allocate(2048);
       if ((readLen = channel.read(buffer)) > 0) {
         byte[] data = new byte[readLen];
         System.arraycopy(buffer.array(), 0, data, 0, readLen);
-        //appended \r\n
-        if(readLen == subscriberIndicator.length + 2 
-            && Arrays.equals(Arrays.copyOf(data, subscriberIndicator.length), subscriberIndicator)) {
+        if (readLen == subscriberIndicator.length && Arrays.equals(data, subscriberIndicator)) {
           logger.info("subscriber identified.");
           owner.javaSuscriberChannel = channel;
           owner.suscriberCountDown.countDown();
+        } else if (readLen == publisherIndicator.length && Arrays.equals(data, publisherIndicator)) {
+          logger.info("publisher identified.");
+          owner.javaPublisherChannel = channel;
+        } else if (owner.javaPublisherChannel == channel) {
+          //this is the message from publisher
+          //redirect this message to subscriber
+          owner.redirectPublishData(data);
         } else {
-          logger.info("read bytes: {}", readLen);
+          logger.info("unexpected message. bytes: {}", readLen);
         }
-      }
-      else if (readLen == -1) {
+        buffer.clear();
+      } else if (readLen == -1) {
         try {
           channel.close();
-        }
-        finally {
+        } finally {
           logger.warn("socket closed.");
         }
-      }
-      else {
+      } else {
         logger.warn("{} read 0 bytes", this);
       }
+    }
+  }
+  
+  //send message to subscriber client
+  private void redirectPublishData(byte[] data)
+  {
+    String message = String.valueOf(data);
+    try {
+      this.javaSuscriberChannel.write(ByteBuffer.wrap(data));
+    } catch (IOException e) {
+      e.printStackTrace();
+      throw new RuntimeException("e");
     }
   }
   
