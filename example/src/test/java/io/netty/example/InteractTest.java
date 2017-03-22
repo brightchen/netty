@@ -24,6 +24,7 @@ import com.google.common.collect.Sets;
 
 import io.netty.bootstrap.Bootstrap;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelPipeline;
 import io.netty.channel.DefaultChannelPromise;
 import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
@@ -173,6 +174,7 @@ public class InteractTest
 
   }
   
+  private ChannelPipeline pipeline;
   public void handleWorkSocket(final NioSocketChannel ch) throws InterruptedException
   {
     EventLoopGroup group = new NioEventLoopGroup();
@@ -180,10 +182,10 @@ public class InteractTest
       Bootstrap b = new Bootstrap();
       b.group(group);
       
-      ch.pipeline().addFirst(new MyEchoHandler()).addFirst(new StringDecoder()).addFirst(new StringEncoder());
+      pipeline = ch.pipeline().addFirst(new MyEchoHandler()).addFirst(new StringDecoder()).addFirst("encode",new StringEncoder());
       EventLoop eventLoop = group.next();
       ch.unsafe().register(eventLoop, new DefaultChannelPromise(ch, eventLoop));
-
+      //sendContext = ch.pipeline().context("encode");
       if(!ch.isRegistered()) {
         System.err.println("Channel not registered yet.");
         Assert.assertFalse(true);
@@ -350,16 +352,22 @@ public class InteractTest
     }
   }
   
-  //send message to subscriber client
+
+  /**
+   * send message to subscriber client
+   * instead directly call Channel#write(ByteBuffer)
+   */
   private void redirectPublishData(byte[] data)
   {
-    String message = String.valueOf(data);
-    try {
-      this.javaSuscriberChannel.write(ByteBuffer.wrap(data));
-    } catch (IOException e) {
-      e.printStackTrace();
-      throw new RuntimeException("e");
-    }
+    String message = new String(data);
+    pipeline.writeAndFlush(message);
+    
+//    try {
+//      this.javaSuscriberChannel.write(ByteBuffer.wrap(data));
+//    } catch (IOException e) {
+//      e.printStackTrace();
+//      throw new RuntimeException("e");
+//    }
   }
   
   private static final Logger logger = LoggerFactory.getLogger(InteractTest.class);
