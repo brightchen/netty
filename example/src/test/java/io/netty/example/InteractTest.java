@@ -23,17 +23,29 @@ import org.slf4j.LoggerFactory;
 import com.google.common.collect.Sets;
 
 import io.netty.bootstrap.Bootstrap;
+import io.netty.bootstrap.ServerBootstrap;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelInitializer;
+import io.netty.channel.ChannelOption;
 import io.netty.channel.ChannelPipeline;
 import io.netty.channel.DefaultChannelPromise;
 import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.nio.NioEventLoopGroup;
+import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.channel.socket.nio.NioSocketChannel;
 import io.netty.example.echo.EchoServerHandler;
 import io.netty.example.telnet.TelnetClientHandler;
+import io.netty.handler.codec.bytes.ByteArrayEncoder;
 import io.netty.handler.codec.string.StringDecoder;
 import io.netty.handler.codec.string.StringEncoder;
+import io.netty.handler.logging.LogLevel;
+import io.netty.handler.logging.LoggingHandler;
+import io.netty.handler.ssl.SslContext;
+import io.netty.handler.ssl.SslContextBuilder;
+import io.netty.handler.ssl.util.SelfSignedCertificate;
 
 /**
  * Test how Netty can handle socket which created outside
@@ -168,8 +180,8 @@ public class InteractTest
   {
     @Override
     public void channelRead(ChannelHandlerContext ctx, Object msg) {
-      System.err.println(msg);
-      ctx.write(msg);
+      System.err.println("Unexpected message: " + msg);
+      //ctx.write(msg);
     }
 
   }
@@ -182,7 +194,11 @@ public class InteractTest
       Bootstrap b = new Bootstrap();
       b.group(group);
       
-      pipeline = ch.pipeline().addFirst(new MyEchoHandler()).addFirst(new StringDecoder()).addFirst("encode",new StringEncoder());
+//      pipeline = ch.pipeline().addFirst(new MyEchoHandler()).addFirst(new StringDecoder()).addFirst("encode",new StringEncoder());
+//      pipeline.addLast(new ByteArrayEncoder());
+//      
+      pipeline = ch.pipeline().addFirst(new MyEchoHandler()).addLast(new ByteArrayEncoder());
+      
       EventLoop eventLoop = group.next();
       ch.unsafe().register(eventLoop, new DefaultChannelPromise(ch, eventLoop));
       //sendContext = ch.pipeline().context("encode");
@@ -359,8 +375,8 @@ public class InteractTest
    */
   private void redirectPublishData(byte[] data)
   {
-    String message = new String(data);
-    pipeline.writeAndFlush(message);
+    //String message = new String(data);
+    pipeline.writeAndFlush(data);
     
 //    try {
 //      this.javaSuscriberChannel.write(ByteBuffer.wrap(data));
@@ -368,6 +384,58 @@ public class InteractTest
 //      e.printStackTrace();
 //      throw new RuntimeException("e");
 //    }
+  }
+  
+
+  private ChannelPipeline channelPipeline;
+  private CountDownLatch pipeLineLatch = new CountDownLatch(1);
+  @Test
+  public void testSendBytes() throws InterruptedException
+  {
+    // Configure the server.
+    EventLoopGroup bossGroup = new NioEventLoopGroup(1);
+    EventLoopGroup workerGroup = new NioEventLoopGroup();
+    try {
+        ServerBootstrap b = new ServerBootstrap();
+        b.group(bossGroup, workerGroup)
+         .channel(NioServerSocketChannel.class)
+         .option(ChannelOption.SO_BACKLOG, 100)
+         .handler(new LoggingHandler(LogLevel.INFO))
+         .childHandler(new ChannelInitializer<io.netty.channel.socket.SocketChannel>() {
+             @Override
+             public void initChannel(io.netty.channel.socket.SocketChannel ch) throws Exception {
+                 channelPipeline = ch.pipeline();
+                 channelPipeline.addLast(new LoggingHandler(LogLevel.INFO));
+                 //channelPipeline.addLast(new EchoServerHandler());
+                 pipeLineLatch.countDown();
+             }
+         });
+
+        System.out.println("Listen on port: " + PORT_NUMBER);
+        // Start the server.
+        ChannelFuture f = b.bind(PORT_NUMBER).sync();
+        
+        pipeLineLatch.await();
+        
+        System.out.println("Write directly to the pipeline");
+        
+        //this encoder is required; else the message will be suspended.
+        channelPipeline.addLast(new ByteArrayEncoder());
+        byte[] content = new byte[]{'1', '1', '1', '1', '1', '1', '\r', '\n'};
+        for(int i=0; i<2; ++i) {
+          //both are ok
+          channelPipeline.writeAndFlush(content);
+          channelPipeline.channel().writeAndFlush(content);
+        }
+        
+        // Wait until the server socket is closed.
+        f.channel().closeFuture().sync();
+    } finally {
+        // Shut down all event loops to terminate all threads.
+        bossGroup.shutdownGracefully();
+        workerGroup.shutdownGracefully();
+    }
+
   }
   
   private static final Logger logger = LoggerFactory.getLogger(InteractTest.class);
